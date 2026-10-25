@@ -43,4 +43,4 @@ The source is `src/darkroom.html`. To make a release, raise `VERSION` in that fi
 
 ## License
 
-MIT. Anyone can use it.
+MIT: free for anyone to use, change and share. See [LICENSE](LICENSE).
