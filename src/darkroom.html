@@ -38,6 +38,7 @@ svg{display:block}
 .topbar::-webkit-scrollbar{display:none}
 .brand{display:flex;align-items:center;gap:9px;font-weight:700;font-size:15px;letter-spacing:-.01em;margin:0 12px 0 4px;white-space:nowrap}
 .safelight{width:11px;height:11px;border-radius:50%;background:var(--accent);box-shadow:0 0 0 3px var(--accent-soft),0 0 14px var(--accent)}
+.ver{font-weight:500;font-size:12px;color:var(--muted);margin-left:-3px;font-variant-numeric:tabular-nums}
 .sep{width:1px;height:22px;background:var(--line);margin:0 4px;flex:none}
 .grow{flex:1}
 .btn{display:inline-flex;align-items:center;gap:6px;height:32px;padding:0 11px;border-radius:7px;border:1px solid var(--line);background:var(--panel-2);cursor:pointer;white-space:nowrap;flex:none}
@@ -156,7 +157,7 @@ dialog .note{color:var(--muted);font-size:13px;margin:0}
 <body>
 <div class="app">
   <header class="topbar">
-    <div class="brand"><span class="safelight" aria-hidden="true"></span><span class="brand-name">Darkroom</span></div>
+    <div class="brand"><span class="safelight" aria-hidden="true"></span><span class="brand-name">Darkroom</span><span class="ver" id="ver"></span></div>
     <button class="btn ghost" id="bNew" title="New canvas">New</button>
     <button class="btn ghost" id="bOpen" title="Open a photo as a new canvas">Open</button>
     <button class="btn ghost" id="bAddImg" title="Add a photo as a new layer">Add image</button>
@@ -308,8 +309,9 @@ dialog .note{color:var(--muted);font-size:13px;margin:0}
 <script>
 (() => {
 'use strict';
-const VERSION = "1.0.0";
+const VERSION = "1.0.1";
 const $ = s => document.querySelector(s);
+$('#ver').textContent = 'v' + VERSION;
 const view = $('#view'), vctx = view.getContext('2d');
 const work = $('#work');
 let dpr = window.devicePixelRatio || 1;
