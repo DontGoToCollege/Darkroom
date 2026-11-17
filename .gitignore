@@ -1,2 +1,15 @@
-/Darkroom.html
-/Versions/
+# Built programs go on the GitHub Releases page, not in the code history
+*.exe
+Darkroom.html
+Versions/
+dist/
+publish/
+
+# Build leftovers
+bin/
+obj/
+.vs/
+*.user
+
+# The app keeps its data in a folder beside the exe
+DarkroomData/
