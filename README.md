@@ -92,9 +92,7 @@ It's a .NET 8 WPF app. The editing canvas runs inside Microsoft Edge WebView2, a
     src/Darkroom/KeyboardHook.cs       "Darkroom hotkeys take precedence"
     src/Darkroom/wwwroot/index.html    The editor itself (embedded into the exe)
 
-To build, install the .NET SDK and run:
-
-    dotnet publish src/Darkroom/Darkroom.csproj -c Release -o publish
+To make a release, install the .NET SDK, raise `<Version>` in `Darkroom.csproj` and `VERSION` in `wwwroot/index.html`, then run `.\publish.ps1` in PowerShell. It builds `Darkroom.exe`, runs its self-check (`Darkroom.exe --smoke`), and keeps a copy of every version in `Versions\Archive`. `.\publish.ps1 -Test` builds into `dist` without archiving.
 
 The GitHub workflow in `.github/workflows/build.yml` also builds the exe on every push.
 

@@ -32,14 +32,24 @@ namespace Darkroom
             "Ctrl+Shift+Home", "Ctrl+Shift+End", "Alt+Backspace"
         };
 
+        // --smoke: the build's self-check. Opens off-screen without taking focus, checks the editor loaded, writes smoke.txt, exits.
+        private readonly bool _smoke = Array.Exists(Environment.GetCommandLineArgs(), a => a.Equals("--smoke", StringComparison.OrdinalIgnoreCase));
+
         public MainWindow()
         {
             InitializeComponent();
+            if (_smoke)
+            {
+                ShowActivated = false;
+                ShowInTaskbar = false;
+                WindowStartupLocation = WindowStartupLocation.Manual;
+                Left = Top = -32000;
+            }
             _keyHook = new KeyboardHook(() => _hwnd, ShouldTakeHotkey, combo => Dispatcher.BeginInvoke(new Action(() => SendHotkey(combo))));
             SourceInitialized += (_, _) => _hwnd = new WindowInteropHelper(this).Handle;
             Activated += (_, _) => { if (_precedence && _hotkeys.Count > 0) _keyHook.Install(); };   // stay first in line
             Closed += (_, _) => _keyHook.Dispose();
-            RestorePlacement();
+            if (!_smoke) RestorePlacement();
             Loaded += async (_, _) => await InitWebViewAsync();
             Closing += OnClosing;
         }
@@ -53,6 +63,11 @@ namespace Darkroom
                 ExtractWebAssets();
                 var env = await CoreWebView2Environment.CreateAsync(null, _store.WebViewDir);
                 await Web.EnsureCoreWebView2Async(env);
+            }
+            catch (Exception ex) when (_smoke)
+            {
+                WriteSmoke(false, "editor didn't start: " + ex.Message);
+                return;
             }
             catch (WebView2RuntimeNotFoundException)
             {
@@ -83,7 +98,39 @@ namespace Darkroom
             core.SetVirtualHostNameToFolderMapping(HostName, _store.WebAssetsDir, CoreWebView2HostResourceAccessKind.Allow);
             core.WebMessageReceived += OnWebMessage;
             core.NewWindowRequested += (_, e) => e.Handled = true;
+            if (_smoke)
+            {
+                await core.AddScriptToExecuteOnDocumentCreatedAsync(
+                    "window.__smokeErrors=[];addEventListener('error',e=>__smokeErrors.push(e.message));" +
+                    "addEventListener('unhandledrejection',e=>__smokeErrors.push(String(e.reason)));");
+                core.NavigationCompleted += async (_, e) => await RunSmokeAsync(e.IsSuccess);
+            }
             core.Navigate($"https://{HostName}/index.html");
+        }
+
+        private async Task RunSmokeAsync(bool navOk)
+        {
+            string want = "v" + typeof(MainWindow).Assembly.GetName().Version!.ToString(3);
+            string ver = "", errors = "";
+            try
+            {
+                await Task.Delay(2000);   // let the editor load its settings and draw the start screen
+                string json = await Web.CoreWebView2.ExecuteScriptAsync(
+                    "JSON.stringify({ver:(document.querySelector('#ver')||{}).textContent||'',tabs:!!document.querySelector('#ptabList'),errors:window.__smokeErrors||['no error log']})");
+                using JsonDocument doc = JsonDocument.Parse(JsonDocument.Parse(json).RootElement.GetString() ?? "{}");
+                ver = doc.RootElement.GetProperty("ver").GetString() ?? "";
+                if (!doc.RootElement.GetProperty("tabs").GetBoolean()) errors = "project tabs missing; ";
+                foreach (JsonElement el in doc.RootElement.GetProperty("errors").EnumerateArray()) errors += el.GetString() + "; ";
+            }
+            catch (Exception ex) { errors += "smoke script failed: " + ex.Message; }
+            WriteSmoke(navOk && ver == want && errors.Length == 0,
+                $"navigation ok: {navOk}\nversion shown: {ver} (want {want})\nerrors: {(errors.Length == 0 ? "none" : errors)}");
+        }
+
+        private void WriteSmoke(bool pass, string details)
+        {
+            File.WriteAllText(Path.Combine(_store.DataDir, "smoke.txt"), (pass ? "PASS" : "FAIL") + "\n" + details + "\n");
+            Close();
         }
 
         /// <summary>Copies the editor page out of the exe so WebView2 can load it.</summary>
@@ -350,6 +397,7 @@ namespace Darkroom
 
         private void OnClosing(object? sender, CancelEventArgs e)
         {
+            if (_smoke) return;
             if (_dirtyCount > 0)
             {
                 string s = _dirtyCount == 1 ? "" : "s";
