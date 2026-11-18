@@ -637,7 +637,7 @@ dialog input[type=color]{width:100%;height:34px;padding:2px;border:1px solid var
 <script>
 (() => {
 'use strict';
-const VERSION = "2.0.2";
+const VERSION = "2.0.3";
 const $ = s => document.querySelector(s);
 $('#ver').textContent = 'v' + VERSION;
 const $$ = s => [...document.querySelectorAll(s)];
@@ -2519,6 +2519,8 @@ function applySlice(a){
   if (snapIt){
     const o = d.origin, f = v => v >= hi ? v - w : v > lo ? lo : v;
     if (o){ if (hz){ const t = f(o.y), b = f(o.y + o.h); o.y = t; o.h = Math.max(1, b - t); } else { const l0 = f(o.x), r0 = f(o.x + o.w); o.x = l0; o.w = Math.max(1, r0 - l0); } }
+    // Layers that weren't sliced move with the joined pieces so everything stays lined up (text, logos…).
+    for (const l of d.layers) if (!targets.includes(l)){ if (hz) l.y = f(l.y); else l.x = f(l.x); }
     if (shrink){ if (hz) d.h -= w; else d.w -= w; }
   }
   P.selection = null;

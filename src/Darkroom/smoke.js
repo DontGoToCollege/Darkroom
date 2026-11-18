@@ -25,6 +25,15 @@
     if (!await until(() => !$('[data-cmd="contentAware"]').disabled)) throw new Error('marquee made no selection');
     $('[data-cmd="contentAware"]').click();
     if (!await until(() => /fill done/.test($('#toast').textContent), 30000)) throw new Error('content-aware fill: ' + $('#toast').textContent);
+
+    // Slicing only the background still moves the shape to its right along with it (2.0.3).
+    const shapeLeft = () => { const x = v.getContext('2d'), y = Math.round(v.height / 2), row = x.getImageData(0, y, v.width, 1).data;
+      for (let i = 0; i < v.width; i++) if (row[i * 4 + 2] > 150 && row[i * 4] < 100) return i; return -1; };
+    await sleep(200); const before = shapeLeft();
+    if (before < 0) throw new Error('shape not found on screen before slicing');
+    $('.tool[data-tool="slice"]').click(); drag(-250, 0, -200, 0); await sleep(300);
+    const after = shapeLeft();
+    if (!(after >= 0 && after < before - 20)) throw new Error(`slicer left the shape behind (x ${before} → ${after})`);
   } catch (e) { errors.push(e.message); }
   errors.push(...(window.__smokeErrors || []));
   return JSON.stringify({ ver: $('#ver').textContent, errors });
