@@ -637,7 +637,7 @@ dialog input[type=color]{width:100%;height:34px;padding:2px;border:1px solid var
 <script>
 (() => {
 'use strict';
-const VERSION = "2.0.1";
+const VERSION = "2.0.2";
 const $ = s => document.querySelector(s);
 $('#ver').textContent = 'v' + VERSION;
 const $$ = s => [...document.querySelectorAll(s)];
@@ -653,6 +653,7 @@ const Host = (() => {
   wv.addEventListener('message', e => {
     const m = e.data;
     if (m && m.type === 'hotkey'){ if (window.darkroomHotkey) window.darkroomHotkey(m.combo); return; }
+    if (m && m.type === 'saveAll'){ if (window.darkroomSaveAll) window.darkroomSaveAll(); return; }
     if (!m || typeof m !== 'object' || !pending.has(m.id)) return;
     const p = pending.get(m.id); pending.delete(m.id);
     m.ok ? p.res(m.result) : p.rej(new Error(m.error || 'Something went wrong.'));
@@ -728,6 +729,7 @@ let tool = 'move';
 let projects = [], P = null;
 let act = null, hover = null, spaceDown = false, altDown = false, pinch = null, editing = null;
 let uid = 1, pid = 1, untitled = 1;
+let busy = null;   // a message while a long job (content-aware fill) runs; canvas edits wait for it
 const pointers = new Map();
 let accent = '#f0a33a', guideColor = '#ff4fb0', workspaceColor = '#10141d';
 
@@ -1005,7 +1007,16 @@ function contentBoundsOf(l){
 const copyLayer = l => ({ ...l, text: l.text ? { ...l.text } : undefined, shape: l.shape ? { ...l.shape } : undefined, canvas: cloneCanvas(l.canvas) });
 function snap(){ const d = D(); return { w: d.w, h: d.h, origin: d.origin ? { ...d.origin } : null, active: d.active, sel: [...d.sel], layers: d.layers.map(copyLayer) }; }
 const docFromSnap = s => ({ w: s.w, h: s.h, origin: s.origin ? { ...s.origin } : { x: 0, y: 0, w: s.w, h: s.h }, active: s.active, sel: new Set(s.sel), layers: s.layers });
-function pushHistory(){ if (!P) return; if (P.xf) commitXf(); P.undo.push(snap()); if (P.undo.length > 40) P.undo.shift(); P.redo = []; markDirty(); updUI(); }
+function pushHistory(){ if (!P) return; if (P.xf) commitXf(); P.undo.push(snap()); if (P.undo.length > 40) P.undo.shift(); P.redo = []; trimHistory(); markDirty(); updUI(); }
+// Every undo step is a full copy of every layer, so big photos would run the editor out of memory and lose
+// unsaved work. Cap all open projects' undo by memory, dropping the oldest steps (other projects' first).
+const UNDO_BYTES = 1e9;
+const snapBytes = s => s.bytes ??= s.layers.reduce((t, l) => t + l.canvas.width * l.canvas.height * 4, 0);
+function trimHistory(){
+  let total = projects.reduce((t, p) => t + [...p.undo, ...p.redo].reduce((u, s) => u + snapBytes(s), 0), 0);
+  for (const p of [...projects.filter(x => x !== P), P])
+    while (total > UNDO_BYTES && p.undo.length > (p === P ? 1 : 0)) total -= snapBytes(p.undo.shift());
+}
 function restore(s){
   const sizeChanged = P.doc.w !== s.w || P.doc.h !== s.h;
   P.doc = docFromSnap(s);
@@ -1214,9 +1225,12 @@ function serializeProject(p){
   const d = p.doc;
   return JSON.stringify({
     format: 'darkroom-project', version: 2, w: d.w, h: d.h, origin: d.origin || null, active: d.active, sel: [...d.sel],
-    layers: d.layers.map(l => ({ id: l.id, name: l.name, type: l.type, x: l.x, y: l.y, visible: l.visible, opacity: l.opacity, blend: l.blend, autoName: !!l.autoName, text: l.text || null, shape: l.shape || null, png: l.canvas.toDataURL('image/png') })),
+    layers: d.layers.map(l => ({ id: l.id, name: l.name, type: l.type, x: l.x, y: l.y, visible: l.visible, opacity: l.opacity, blend: l.blend, autoName: !!l.autoName, text: l.text || null, shape: l.shape || null, png: layerPng(l) })),
   });
 }
+// A canvas too big to encode gives "data:,", which would save a project that can't be opened again.
+function layerPng(l){ const u = l.canvas.toDataURL('image/png'); if (u.length < 30) throw new RangeError(`“${l.name}” is too big to save.`); return u; }
+const TOO_BIG = 'This project is too big to save as one file. Delete or merge some layers, or crop the image, then save again. Export still works.';
 async function loadDataUrl(u){
   try { const b = await (await fetch(u)).blob(); return await createImageBitmap(b); }
   catch (e) { return await new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = rej; i.src = u; }); }
@@ -1288,14 +1302,16 @@ async function saveProject(saveAs){
     p.dirty = false; renderTabs(); updateTitle(); reportDirty(); refreshRecent();
     toast('Saved ' + p.name + '.drk');
     return true;
-  } catch (e) { toast('Couldn’t save: ' + e.message); return false; }
+  } catch (e) { toast(e instanceof RangeError ? TOO_BIG : 'Couldn’t save: ' + e.message); return false; }
   finally { saving = false; }
 }
 function blobToBase64(blob){ return new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(String(r.result).split(',')[1] || ''); r.onerror = rej; r.readAsDataURL(blob); }); }
 const MIME = { png: 'image/png', jpg: 'image/jpeg', webp: 'image/webp' };
 async function encodeExport(fmt){
   const c = flatten(fmt === 'jpg' ? '#ffffff' : null);
-  return await new Promise(r => c.toBlob(r, MIME[fmt], S.jpegQuality / 100));
+  const blob = await new Promise(r => c.toBlob(r, MIME[fmt], S.jpegQuality / 100));
+  if (!blob) throw new Error('the image is too big for this format. Try Image size to make it smaller, or another format.');
+  return blob;
 }
 const FMT_NOTES = {
   png: 'Keeps transparency and full quality. Largest files.',
@@ -1329,7 +1345,7 @@ $('#dExport').addEventListener('close', async () => {
       await Host.call('writeFile', { path: r.path, base64: await blobToBase64(blob) });
       toast('Exported ' + r.path.split(/[\\/]/).pop());
     } else {
-      const blob = await encodeExport(fmt); if (blob) downloadBlob(blob, base + '.' + fmt);
+      downloadBlob(await encodeExport(fmt), base + '.' + fmt);
     }
   } catch (e) { toast('Couldn’t export: ' + e.message); }
 });
@@ -2014,7 +2030,7 @@ function commitXf(){
     const m = mapPt(xf, l.x + l.canvas.width / 2, l.y + l.canvas.height / 2);
     if (l.type === 'text' && noRot && xf.sx > 0 && xf.sy > 0 && Math.abs(xf.sx / xf.sy - 1) < 0.03){
       const k = (xf.sx + xf.sy) / 2, t = l.text;
-      t.size = clamp(Math.round(t.size * k), 4, 2000);
+      t.size = clamp(Math.round(t.size * k), 4, 1000);
       ['outlineW', 'shadowX', 'shadowY', 'shadowBlur', 'spacing'].forEach(p => { if (typeof t[p] === 'number') t[p] = Math.round(t[p] * k * 10) / 10; });
       l._r = false; l._m = null; renderText(l);
       l.x = Math.round(m.x - l.canvas.width / 2); l.y = Math.round(m.y - l.canvas.height / 2); continue;
@@ -2527,7 +2543,7 @@ document.addEventListener('wheel', e => {
 /* ================= content-aware fill ================= */
 // Fills the selection by copying matching patches from around it, one pixel at a time from the edge inward,
 // keeping neighbouring pixels coherent so texture continues naturally. A refinement pass then smooths seams.
-function inpaint(px, w, h, hole){
+async function inpaint(px, w, h, hole, progress){
   // Exemplar-based fill: repeatedly pick the edge spot with the most known surroundings (and strongest
   // structure), find the best matching patch elsewhere in the image, and copy its pixels into the gap.
   const N = w * h, R = Math.max(4, Math.min(7, Math.round(Math.sqrt(hole.reduce((t, v) => t + v, 0)) / 14)));
@@ -2576,8 +2592,10 @@ function inpaint(px, w, h, hole){
     }
     return n ? e / n : Infinity;
   };
-  let guard = N * 2;
+  let guard = N * 2, total = remaining, slice = performance.now();
   while (front.size && remaining > 0 && guard-- > 0){
+    // Big fills take a while: let the window breathe and show progress instead of freezing ("Not responding").
+    if (performance.now() - slice > 60){ progress(1 - remaining / total); await new Promise(r => setTimeout(r)); slice = performance.now(); }
     let p = -1, bp = -1; for (const [i, v] of front) if (v > bp){ bp = v; p = i; }
     const px0 = p % w, py0 = (p / w) | 0;
     let best = -1, bestE = Infinity;
@@ -2625,6 +2643,7 @@ function inpaint(px, w, h, hole){
   px.set(out);
 }
 function contentAwareFill(alpha = 1){
+  if (busy){ toast(busy); return; }
   const m = selMask(); if (!m){ toast('Make a selection first.'); return; }
   const l = active();
   if (!l || l.type !== 'raster'){ toast('Content-aware fill needs an image layer. Select one, or rasterize this layer first.'); return; }
@@ -2632,7 +2651,8 @@ function contentAwareFill(alpha = 1){
   const b = P.selection.bounds;
   if (b.w * b.h > 1500000){ toast('That selection is too large for content-aware fill. Try a smaller area.'); return; }
   toast('Filling with content from the surrounding area…');
-  setTimeout(() => {
+  busy = 'Content-aware fill is still working. Wait for it to finish.';
+  setTimeout(async () => { try {
     pushHistory(); ensureCovers(l);
     const M = clamp(Math.round(Math.max(b.w, b.h) * 0.6), 24, 240);
     const x0 = clamp(b.x - l.x - M, 0, l.canvas.width), y0 = clamp(b.y - l.y - M, 0, l.canvas.height);
@@ -2642,12 +2662,12 @@ function contentAwareFill(alpha = 1){
     const mk = m.getContext('2d').getImageData(x0 + l.x, y0 + l.y, w, h).data, hole = new Uint8Array(w * h);
     let n = 0; for (let i = 0; i < w * h; i++) if (mk[i * 4 + 3] >= 128){ hole[i] = 1; n++; }
     if (!n){ dropLastSnapshot(); toast('The selection doesn’t cover this layer.'); return; }
-    inpaint(img.data, w, h, hole);
+    await inpaint(img.data, w, h, hole, f => toast(`Content-aware fill: ${Math.round(f * 100)}%`));
     const rc = makeCanvas(w, h), rx = rc.getContext('2d'); rx.putImageData(img, 0, 0);
     rx.globalCompositeOperation = 'destination-in'; rx.drawImage(m, -(x0 + l.x), -(y0 + l.y));
     ctx.save(); ctx.globalAlpha = alpha; ctx.drawImage(rc, x0, y0); ctx.restore();
     touch(l); changed(); toast('Content-aware fill done. Ctrl+Z undoes it.');
-  }, 40);
+  } finally { busy = null; } }, 40);
 }
 
 /* ================= clone stamp & healing brush ================= */
@@ -2877,6 +2897,7 @@ function finishAction(a){
 }
 view.addEventListener('pointerdown', e => {
   if (!P) return;
+  if (busy && e.button !== 1 && !spaceDown && tool !== 'hand'){ toast(busy); return; }
   closeOverlays();
   const p = evPos(e); pointers.set(e.pointerId, p);
   try { view.setPointerCapture(e.pointerId); } catch (_) {}
@@ -3486,6 +3507,7 @@ const CMDS = {
 document.addEventListener('click', e => {
   const b = e.target.closest('[data-cmd]'); if (!b || b.disabled) return;
   const fn = CMDS[b.dataset.cmd]; if (!fn) return;
+  if (busy && !['zoomIn', 'zoomOut', 'fit', 'actual', 'fitHeight', 'fitWidth'].includes(b.dataset.cmd)){ toast(busy); return; }
   if (b.closest('.rbody')) closePeek();
   fn(b);
 });
@@ -3521,6 +3543,10 @@ $('#dResize').addEventListener('close', () => {
       const c = makeCanvas(l.canvas.width * sx, l.canvas.height * sy), x = c.getContext('2d');
       x.imageSmoothingQuality = 'high'; x.drawImage(l.canvas, 0, 0, c.width, c.height);
       l.canvas = c; l.x = Math.round(l.x * sx); l.y = Math.round(l.y * sy);
+    } else if (l.type === 'shape'){
+      const s = l.shape, gx = (l.x + l._sp) * sx, gy = (l.y + l._sp) * sy;
+      if (isLineKind(s.kind)){ s.dx *= sx; s.dy *= sy; } else { s.w = Math.max(1, Math.round(s.w * sx)); s.h = Math.max(1, Math.round(s.h * sy)); }
+      l._sp = null; renderShape(l); l.x = Math.round(gx) - l._sp; l.y = Math.round(gy) - l._sp;
     } else {
       l.x = Math.round(l.x * sx); l.y = Math.round(l.y * sy);
       l.text.size = Math.max(4, Math.round(l.text.size * Math.sqrt(sx * sy))); l._r = false; renderText(l);
@@ -3565,7 +3591,7 @@ const COMMANDS = [
   { id: 'addLayer', cat: 'Home', label: 'New layer', keys: ['Ctrl+Shift+N'], run: () => addLayer() },
   { id: 'addImage', cat: 'Home', label: 'Add image as a layer', run: () => CMDS.addImage() },
   { id: 'duplicate', cat: 'Home', label: 'Duplicate layer (or copy the selection to a new layer)', keys: ['Ctrl+J'], run: () => selMask() ? layerViaCopy(false) : duplicateSel() },
-  { id: 'deleteCtx', cat: 'Home', label: 'Delete (selected pixels, or the selected layers)', keys: ['Delete', 'Backspace'], run: () => { if (!P) return false; selMask() && active() && active().type === 'raster' ? clearSel() : deleteSel(); } },
+  { id: 'deleteCtx', cat: 'Home', label: 'Delete (selected pixels, or the selected layers)', keys: ['Delete', 'Backspace'], run: () => { if (!P) return false; selMask() ? clearSel() : deleteSel(); } },
   { id: 'raise', cat: 'Home', label: 'Bring layer forward', run: () => moveSel(1) },
   { id: 'lower', cat: 'Home', label: 'Send layer backward', run: () => moveSel(-1) },
   { id: 'selectAll', cat: 'Home', label: 'Select all (layers, or pixels with a selection tool)', keys: ['Ctrl+A'], run: () => ['marquee', 'lasso', 'wand'].includes(tool) ? selectAllPixels() : selectAll() },
@@ -3668,7 +3694,7 @@ function syncTyping(){ if (!Host) return; const t = isTyping(document.activeElem
 document.addEventListener('focusin', syncTyping); document.addEventListener('focusout', () => setTimeout(syncTyping, 0));
 // The desktop app sends hotkeys it intercepted (when "take precedence" is on) here.
 window.darkroomHotkey = combo => {
-  if (hkCapture || document.querySelector('dialog[open]') || !$('#ctxMenu').hidden) return;
+  if (busy || hkCapture || document.querySelector('dialog[open]') || !$('#ctxMenu').hidden) return;
   if (editing && !isStrong(combo)) return;
   runCombo(combo, null);
 };
@@ -3689,6 +3715,14 @@ function updateTooltips(){
     const ks = keysFor(id); el.title = TIP_BASE.get(el) + (ks.length ? ` (${ks.join(' or ')})` : '');
   });
 }
+
+// The desktop app asks for this when you close the window and choose Save: save every changed project, then quit.
+// Canceling any Save dialog keeps the app open.
+window.darkroomSaveAll = async () => {
+  if (busy){ toast(busy); return; }
+  for (const p of projects.filter(p => p.dirty)){ if (p !== P) switchProject(p); if (!(await saveProject(false))) return; }
+  Host.call('quit').catch(() => {});
+};
 
 /* ================= keyboard ================= */
 let lastNudge = 0;
@@ -3722,9 +3756,10 @@ document.addEventListener('keydown', e => {
     if (tool === 'crop' && P){ e.preventDefault(); applyCrop(); return; }
   }
   if (e.key === ' ' && !mod && !e.altKey){ if (!spaceDown){ spaceDown = true; updCursor(hover); redraw(); } e.preventDefault(); return; }
+  if (busy && combo && bindMap.has(combo) && !/^(fit|actual|zoom)/.test(bindMap.get(combo).id)){ e.preventDefault(); toast(busy); return; }
   if (runCombo(combo, e)) return;
   const arrows = { arrowleft: [-1, 0], arrowright: [1, 0], arrowup: [0, -1], arrowdown: [0, 1] };
-  if (arrows[k] && !mod && !e.altKey && tool === 'move' && P && !e.target.closest('.layer-list')){
+  if (arrows[k] && !busy && !mod && !e.altKey && tool === 'move' && P &&!e.target.closest('.layer-list')){
     const n = e.shiftKey ? 10 : 1, now = Date.now();
     if (P.xf){ e.preventDefault(); P.xf.C = { x: P.xf.C.x + arrows[k][0] * n, y: P.xf.C.y + arrows[k][1] * n }; redraw(); return; }
     const sel = selected(); if (!sel.length) return; e.preventDefault();

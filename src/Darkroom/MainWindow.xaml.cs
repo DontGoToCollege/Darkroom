@@ -115,11 +115,12 @@ namespace Darkroom
             try
             {
                 await Task.Delay(2000);   // let the editor load its settings and draw the start screen
-                string json = await Web.CoreWebView2.ExecuteScriptAsync(
-                    "JSON.stringify({ver:(document.querySelector('#ver')||{}).textContent||'',tabs:!!document.querySelector('#ptabList'),errors:window.__smokeErrors||['no error log']})");
-                using JsonDocument doc = JsonDocument.Parse(JsonDocument.Parse(json).RootElement.GetString() ?? "{}");
+                using var js = new StreamReader(typeof(MainWindow).Assembly.GetManifestResourceStream("smoke.js")!);
+                string args = JsonSerializer.Serialize(new { expression = js.ReadToEnd(), awaitPromise = true, returnByValue = true });
+                using JsonDocument res = JsonDocument.Parse(await Web.CoreWebView2.CallDevToolsProtocolMethodAsync("Runtime.evaluate", args));
+                if (res.RootElement.TryGetProperty("exceptionDetails", out JsonElement ex)) throw new InvalidOperationException(ex.ToString());
+                using JsonDocument doc = JsonDocument.Parse(res.RootElement.GetProperty("result").GetProperty("value").GetString() ?? "{}");
                 ver = doc.RootElement.GetProperty("ver").GetString() ?? "";
-                if (!doc.RootElement.GetProperty("tabs").GetBoolean()) errors = "project tabs missing; ";
                 foreach (JsonElement el in doc.RootElement.GetProperty("errors").EnumerateArray()) errors += el.GetString() + "; ";
             }
             catch (Exception ex) { errors += "smoke script failed: " + ex.Message; }
@@ -253,6 +254,11 @@ namespace Darkroom
 
                 case "setTyping":
                     _typing = Bool(args, "typing");
+                    return true;
+
+                case "quit":   // everything was saved after the Save-on-close question
+                    _dirtyCount = 0;
+                    Dispatcher.BeginInvoke(new Action(Close));
                     return true;
 
                 case "openFolder":
@@ -402,11 +408,18 @@ namespace Darkroom
             {
                 string s = _dirtyCount == 1 ? "" : "s";
                 var answer = MessageBox.Show(this,
-                    $"You have unsaved changes in {_dirtyCount} project{s}. Close Darkroom and discard them?",
-                    "Darkroom", MessageBoxButton.YesNo, MessageBoxImage.Warning, MessageBoxResult.No);
-                if (answer != MessageBoxResult.Yes)
+                    $"You have unsaved changes in {_dirtyCount} project{s}. Save them before closing?\n\nYes saves, No closes without saving.",
+                    "Darkroom", MessageBoxButton.YesNoCancel, MessageBoxImage.Warning, MessageBoxResult.Cancel);
+                if (answer == MessageBoxResult.Cancel)
                 {
                     e.Cancel = true;
+                    return;
+                }
+                if (answer == MessageBoxResult.Yes)
+                {
+                    // The editor saves each project (asking where for new ones), then sends "quit".
+                    e.Cancel = true;
+                    Web.CoreWebView2?.PostWebMessageAsJson("{\"type\":\"saveAll\"}");
                     return;
                 }
             }
